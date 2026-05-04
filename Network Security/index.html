@@ -1,0 +1,174 @@
+
+<!DOCTYPE html>
+
+<html>
+<head>
+    <title>WebAuthn Demo</title>
+</head>
+<body>
+
+<h2>WebAuthn Demo</h2>
+
+<h3>Login via Phone</h3>
+<img id="qr" width="200">
+<button onclick="startQR()">Generate QR</button>
+
+<script>
+let sessionId = null;
+
+async function startQR(){
+
+    let img = document.getElementById("qr");
+
+    // ALWAYS use localhost
+    img.src = "http://localhost:5000/qr_login";
+
+    // demo input
+    sessionId = prompt("Paste session ID from server terminal");
+
+    pollStatus();
+}
+
+async function pollStatus(){
+
+    if(!sessionId) return;
+
+    let res = await fetch("http://localhost:5000/qr_status/" + sessionId);
+    let data = await res.json();
+
+    if(data.status === "verified"){
+        alert("Logged in via phone!");
+    } else {
+        setTimeout(pollStatus, 2000);
+    }
+}
+</script>
+
+<button onclick="register()">Register</button> <button onclick="login()">Authenticate</button>
+
+<script>
+// base64url → Uint8Array
+function base64urlToUint8Array(base64url) {
+    const padding = '='.repeat((4 - base64url.length % 4) % 4);
+    const base64 = (base64url + padding)
+        .replace(/-/g, '+')
+        .replace(/_/g, '/');
+
+    return Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+}
+
+// Uint8Array → base64url
+function uint8ArrayToBase64url(buffer) {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+
+    return btoa(binary)
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=/g, '');
+}
+
+
+
+// REGISTER
+// -----------------------------
+async function register(){
+  try {
+
+    // FIX: use localhost (NOT 127.0.0.1)
+    let response = await fetch("http://localhost:5000/register");
+
+    if(!response.ok){
+        throw new Error("Register begin failed");
+    }
+
+    let options = await response.json();
+
+    options.challenge = base64urlToUint8Array(options.challenge);
+    options.user.id = base64urlToUint8Array(options.user.id);
+
+    console.log("Calling create...");
+
+    let credential = await navigator.credentials.create({
+        publicKey: options
+    });
+
+    let res = await fetch("http://localhost:5000/register_complete", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            id: uint8ArrayToBase64url(credential.rawId),   // FORCE MATCH
+            rawId: uint8ArrayToBase64url(credential.rawId),
+            type: credential.type,
+            response: {
+                attestationObject: uint8ArrayToBase64url(credential.response.attestationObject),
+                clientDataJSON: uint8ArrayToBase64url(credential.response.clientDataJSON)
+            }
+        })
+    });
+
+    if(!res.ok){
+        let errText = await res.text();
+        throw new Error(errText);
+    }
+
+    alert("Registered successfully!");
+
+  } catch (err) {
+    console.error("REGISTER FAILED:", err);
+    alert("Registration failed! Check console.");
+  }
+}
+
+
+
+// AUTHENTICATE
+// -----------------------------
+async function login(){
+
+    let response = await fetch("http://localhost:5000/authenticate");
+
+    if(!response.ok){
+        alert("User not registered!");
+        return;
+    }
+
+    let options = await response.json();
+
+    options.challenge = base64urlToUint8Array(options.challenge);
+
+    if (options.allowCredentials) {
+        options.allowCredentials = options.allowCredentials.map(cred => ({
+            ...cred,
+            id: base64urlToUint8Array(cred.id)
+        }));
+    }
+
+    let assertion = await navigator.credentials.get({
+        publicKey: options
+    });
+
+    await fetch("http://localhost:5000/authenticate_complete", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            id: assertion.id,
+            rawId: uint8ArrayToBase64url(assertion.rawId),
+            type: assertion.type,
+            response: {
+                authenticatorData: uint8ArrayToBase64url(assertion.response.authenticatorData),
+                clientDataJSON: uint8ArrayToBase64url(assertion.response.clientDataJSON),
+                signature: uint8ArrayToBase64url(assertion.response.signature)
+            }
+        })
+    });
+
+    alert("Authenticated successfully!");
+}
+</script>
+
+</body>
+</html>
